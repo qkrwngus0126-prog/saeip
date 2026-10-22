@@ -162,7 +162,7 @@
     const M = 130, width = W - M * 2;
     const photoSide = photo ? 640 : 0;
     const fit = fitLines(c, line || '', width, photo ? 480 : 700);
-    const block = (photo ? photoSide + 170 : 330) + (eyebrow ? 70 : 0) + fit.lines.length * fit.lh;
+    const block = (photo ? photoSide + 290 : 330) + (eyebrow ? 70 : 0) + fit.lines.length * fit.lh;
     let y = Math.max(170, (H - 200 - block) / 2);
 
     if (photo) {
@@ -170,7 +170,7 @@
       c.save(); roundRect(c, x, y, photoSide, photoSide, 36); c.clip();
       c.drawImage(photo, (photo.naturalWidth - s) / 2, (photo.naturalHeight - s) / 2, s, s, x, y, photoSide, photoSide);
       c.restore();
-      y += photoSide + 90;
+      y += photoSide + 160;
     } else {
       // 사진이 없으면 세잎클로버가 주인공이에요
       drawClover(c, W / 2, y + 120, 118, STYLES[style] ? style : 'night');
@@ -178,8 +178,8 @@
     }
     if (photo) {
       // 사진이 있어도 세잎은 빠지지 않게, 사진 아래에 작게
-      drawClover(c, W / 2, y - 20, 44, STYLES[style] ? style : 'night');
-      y += 80;
+      drawClover(c, W / 2, y, 50, STYLES[style] ? style : 'night');
+      y += 130;
     }
 
     c.textAlign = 'center'; c.textBaseline = 'top';
