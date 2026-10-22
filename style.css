@@ -296,7 +296,7 @@ button, input, textarea, select { font: inherit; color: inherit; }
   font-size: var(--step-small); cursor: pointer; transition: background-color 160ms ease, color 160ms ease, border-color 160ms ease;
 }
 .seg button:hover { color: var(--ink); }
-.seg button[aria-checked="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.seg button[aria-checked="true"], .seg button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 
 .check { display: flex; align-items: flex-start; gap: 10px; font-size: var(--step-small); cursor: pointer; }
 .check input { margin-top: 4px; width: 16px; height: 16px; accent-color: var(--accent); flex: none; }
