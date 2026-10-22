@@ -571,11 +571,11 @@
         h('span', { class: 'eyebrow' }, tr('plantedOn', { d: localDay(r.created_at) }) + (r.updated_at ? ' · ' + tr('edited') : '')),
         mine
           ? h('div', { class: 'row' },
-              shareBtn(r),
+              shareBtn(r), cardBtn(r),
               h('button', { type: 'button', class: 'btn', onclick: () => openWrite({ record: r }) }, tr('edit')),
               h('button', { type: 'button', class: 'btn danger', onclick: () => openDelete(r) }, tr('del')))
           : h('div', { class: 'row' },
-              shareBtn(r),
+              shareBtn(r), cardBtn(r),
               h('button', { type: 'button', class: 'btn quiet', onclick: () => { if (requireLogin({ type: 'report', id: r.id }, tr('loginWhyReport'))) openReport(r.id); } }, tr('report')))),
     ]);
   }
@@ -593,6 +593,40 @@
       try { await navigator.clipboard.writeText(url); toast(tr('linkCopied')); }
       catch (_) { window.prompt(tr('shareLink'), url); }
     } }, tr('shareLink'));
+  }
+
+  // 스토리용 그림: 들판을 배경으로 그 세잎의 한 줄을 담은 세로 이미지를 만들어 저장하거나 바로 공유해요
+  function cardBtn(r) {
+    return h('button', { type: 'button', class: 'btn', onclick: () => openCard(r) }, tr('cardBtn'));
+  }
+  async function openCard(r) {
+    loading(tr('cardMaking'));
+    let blob;
+    try {
+      blob = await window.makeCard({
+        line: r.line,
+        eyebrow: [dot(r.happy_on), r.place].filter(Boolean).join(' · '),
+        foot: tr('cardFoot'),
+        photoUrl: r.photo_path ? api.photoUrl(r.photo_path) : null,
+        field: document.querySelector('.field > canvas:not(.minimap)'),
+      });
+    } catch (e) { open([head(null, tr('cardFail')), h('p', { class: 'note' }, errMsg(e))]); return; }
+    const url = URL.createObjectURL(blob);
+    const file = new File([blob], 'saeip-' + String(r.id).slice(0, 8) + '.jpg', { type: 'image/jpeg' });
+    let canShare = false;
+    try { canShare = !!(navigator.canShare && navigator.canShare({ files: [file] })); } catch (_) { /* 저장만 */ }
+    open([
+      head(tr('cardEyebrow'), tr('cardTitle')),
+      h('figure', { class: 'card-prev' }, h('img', { src: url, alt: r.line })),
+      h('p', { class: 'note' }, tr('cardHint')),
+      h('div', { class: 'row end' },
+        h('button', { type: 'button', class: 'btn quiet', onclick: () => openRead(r.id) }, tr('back')),
+        h('a', { class: 'btn' + (canShare ? '' : ' primary'), href: url, download: file.name }, tr('cardSave')),
+        canShare ? h('button', { type: 'button', class: 'btn primary', async onclick() {
+          try { await navigator.share({ files: [file] }); }
+          catch (e) { if (!e || e.name !== 'AbortError') toast(errMsg(e)); }
+        } }, tr('cardShare')) : null),
+    ], () => URL.revokeObjectURL(url));
   }
 
   /* ---------- writing and editing ---------- */
