@@ -212,10 +212,25 @@
 
     function leafAt(x, y, z, tier, grass, s) {
       s = Math.round(s / S_STEP) * S_STEP; // a handful of sizes, so each has a ready-made picture (see sized)
-      return { hx: x, hy: y, rx: 0, ry: 0, ox: 0, oy: 0, vx: 0, vy: 0, rot: 0, z, tier, grass, s, order: 0,
+      return pin({ hx: x, hy: y, rx: 0, ry: 0, ox: 0, oy: 0, vx: 0, vy: 0, rot: 0, z, tier, grass, s, order: 0,
         v: grass ? (Math.random() * 3) | 0 : (Math.random() * GREENS.length * ROTS) | 0,
         // a few leaves carry something of the season: a fallen leaf, a petal, snow or a drop of dew
-        deco: Math.random(), dv: (Math.random() * 4) | 0, da: Math.random() * Math.PI * 2, dd: 0.25 + Math.random() * 0.45 };
+        deco: Math.random(), dv: (Math.random() * 4) | 0, da: Math.random() * Math.PI * 2, dd: 0.25 + Math.random() * 0.45 });
+    }
+    // the device pixel a leaf's picture is drawn at (the same rounding as paint), so a leaf that only
+    // drifts by a fraction of a pixel, as the slow tail of a dug path does, needs no painting at all
+    function pin(l) {
+      l.hw = Math.max(2, Math.round(SPRITE * l.s * dpr)) / 2;
+      l.dx = Math.round((l.hx + l.ox) * dpr - l.hw); l.dy = Math.round((l.hy + l.oy) * dpr - l.hw);
+      return l;
+    }
+    function moved(l) {
+      const dx = Math.round((l.hx + l.ox) * dpr - l.hw), dy = Math.round((l.hy + l.oy) * dpr - l.hw);
+      if (dx === l.dx && dy === l.dy) return;
+      const r = reach(l);
+      mark((l.dx + l.hw) / dpr, (l.dy + l.hw) / dpr, r);
+      mark((dx + l.hw) / dpr, (dy + l.hw) / dpr, r);
+      l.dx = dx; l.dy = dy;
     }
     function buildItems() {
       items = [];
@@ -296,19 +311,48 @@
     }
     const inView = (x, y, m) => x > cam.x + m && x < cam.x + VW - m && y > cam.y + m && y < cam.y + VH - m;
 
-    function resize() {
+    // how sharp the meadow is drawn. 1.5x is sharp enough for leaves and paints far fewer pixels each frame than 2x or 3x;
+    // a device that still can't keep up while digging steps down a notch once the hand rests, and remembers it
+    const SHARP = [1.5, 1.25, 1];
+    const SHARP_KEY = 'happy:field-sharp';
+    let sharp = 0;
+    try { sharp = Math.min(SHARP.length - 1, Math.max(0, parseInt(localStorage.getItem(SHARP_KEY), 10) || 0)); } catch (_) { /* 처음 값으로 */ }
+    const gaps = [];
+    let lastFrame = 0, slow = false, easing = 0, calm = true;
+    function pace(now, busy) {
+      if (busy && lastFrame && now - lastFrame < 250) gaps.push(now - lastFrame);
+      lastFrame = busy ? now : 0;
+      if (gaps.length >= 90) {
+        gaps.sort((a, b) => a - b);
+        if (gaps[45] > 26) slow = true; // most of the last 90 frames took longer than about 38 frames a second allows
+        gaps.length = 0;
+      }
+    }
+    function easeOff() {
+      easing = 0;
+      if (!slow) return;
+      // only while every leaf is at rest, so the picture never changes under the hand
+      if ((raf && !calm) || gesture || camAnim || sweeping) { easing = setTimeout(easeOff, 400); return; }
+      slow = false;
+      const now = Math.min(window.devicePixelRatio || 1, SHARP[sharp]);
+      if (sharp >= SHARP.length - 1 || Math.min(window.devicePixelRatio || 1, SHARP[sharp + 1]) >= now) return;
+      sharp++;
+      try { localStorage.setItem(SHARP_KEY, String(sharp)); } catch (_) { /* 이번 방문에만 */ }
+      resize(true);
+    }
+
+    function resize(force) {
       const r = field.getBoundingClientRect();
       if (!r.width || !r.height) return;
-      if (r.width === VW && r.height === VH) return;
+      if (!force && r.width === VW && r.height === VH) return;
       const first = !VW;
       const midX = cam.x + VW / 2, midY = cam.y + VH / 2; // keep the same spot in the middle
       VW = r.width; VH = r.height;
-      // 1.5x is sharp enough for leaves and paints far fewer pixels each frame than 2x or 3x
-      const nd = Math.min(window.devicePixelRatio || 1, 1.5);
+      const nd = Math.min(window.devicePixelRatio || 1, SHARP[sharp]);
       const rebuild = !cloverSprites.length || nd !== dpr;
       dpr = nd;
       canvas.width = Math.round(VW * dpr); canvas.height = Math.round(VH * dpr);
-      if (rebuild) { buildSprites(); buildSoil(); chunks.clear(); blossoms = {}; sizedCache = new Map(); if (airKey) { const [p, se, w] = airKey.split(','); airKey = ''; api.setAtmosphere({ phase: p, season: se, weather: w }); } }
+      if (rebuild) { buildSprites(); buildSoil(); chunks.clear(); blossoms = {}; sizedCache = new Map(); items.forEach(pin); if (airKey) { const [p, se, w] = airKey.split(','); airKey = ''; api.setAtmosphere({ phase: p, season: se, weather: w }); } }
       chunkMax = Math.max(24, Math.ceil(VW / CHUNK + 2) * Math.ceil(VH / CHUNK + 2) * 2);
       if (!items.length) { buildItems(); bury(hidden); index(); }
       if (first) { cam.x = (WW - VW) / 2; cam.y = (WH - VH) / 2; }
@@ -383,9 +427,7 @@
         c.vx += (tx - c.ox) * 0.075 * k; c.vy += (ty - c.oy) * 0.075 * k;
         const damp = Math.pow(0.78, k);
         c.vx *= damp; c.vy *= damp;
-        mark(c.hx + c.ox, c.hy + c.oy, reach(c));
         c.ox += c.vx * k; c.oy += c.vy * k;
-        mark(c.hx + c.ox, c.hy + c.oy, reach(c));
         const settle = Math.pow(0.965, k);
         c.rx *= settle; c.ry *= settle;
         c.rot = 0; // leaves slide aside without turning; turning made every frame much slower to paint
@@ -394,6 +436,7 @@
           c.ox = c.oy = c.vx = c.vy = c.rx = c.ry = c.rot = 0;
           moving.delete(c);
         } else energy += e;
+        moved(c);
       }
       for (const h of hidden) {
         const near_ = p.active && Math.abs(p.x - h.x) < R * 1.2 && Math.abs(p.y - h.y) < R * 1.2 && Math.hypot(p.x - h.x, p.y - h.y) < R * 1.2;
@@ -436,7 +479,8 @@
           // the photo sits small at the front of the label; an older photo without a small copy uses the big one
           const img = document.createElement('img');
           img.alt = ''; img.decoding = 'async';
-          img.onerror = () => { if (img.src !== photo[1]) img.src = photo[1]; else img.remove(); };
+          img.onerror = () => { if (img.src !== photo[1]) img.src = photo[1]; else { img.remove(); tagW = 0; if (shownNow) placeTag(shownNow); } };
+          img.onload = () => { tagW = 0; if (shownNow) placeTag(shownNow); };
           img.src = photo[0];
           const span = document.createElement('span');
           span.textContent = text;
@@ -445,25 +489,64 @@
         tag.classList.toggle('has-photo', !!photo);
         tag.classList.toggle('is-empty', h.kind === 'empty');
         tag.classList.toggle('is-mine', h.kind === 'happy' && h.mine);
+        tagW = 0;
         placeTag(h);
       }
       tag.classList.toggle('is-hidden', !h);
       opts.onShow && opts.onShow(h ? public_(h) : null);
     }
+    // the label's width is measured once per label, not on every frame the view moves (that would force a layout each time)
+    let tagW = 0;
     function placeTag(h) {
       // keep the whole label inside the field, whatever its length
-      const half = (tag.offsetWidth || 160) / 2 + 8;
+      if (!tagW) tagW = tag.offsetWidth;
+      const half = (tagW || 160) / 2 + 8;
       const x = h.x - cam.x, y = h.y - cam.y;
       tag.style.left = Math.max(half, Math.min(VW - half, x)) + 'px';
       tag.style.top = y + 'px';
       tag.classList.toggle('is-off', y < 0 || y > VH || x < 0 || x > VW);
     }
 
-    // only the part of the view that moved is painted again each frame
-    let dirty = null, full = true;
+    // only the parts of the view that changed are painted again each frame, kept as small tiles,
+    // so a long dug path repaints its few changing patches rather than one box around all of it
+    let full = true;
+    const DT = 32, DOFF = 8;              // dirty tile size, and an offset that keeps tile numbers positive
+    const dirty = new Set();
     function mark(x, y, r) {
-      if (!dirty) dirty = { x0: x - r, y0: y - r, x1: x + r, y1: y + r };
-      else { dirty.x0 = Math.min(dirty.x0, x - r); dirty.y0 = Math.min(dirty.y0, y - r); dirty.x1 = Math.max(dirty.x1, x + r); dirty.y1 = Math.max(dirty.y1, y + r); }
+      const tx0 = Math.floor((x - r) / DT), tx1 = Math.floor((x + r) / DT);
+      const ty0 = Math.floor((y - r) / DT), ty1 = Math.floor((y + r) / DT);
+      for (let ty = ty0; ty <= ty1; ty++) for (let tx = tx0; tx <= tx1; tx++) dirty.add((ty + DOFF) * 65536 + tx + DOFF);
+    }
+    // the dirty tiles inside the view, joined into as few rectangles as rows and columns allow
+    function dirtyRects() {
+      const vx0 = Math.floor(cam.x / DT), vx1 = Math.floor((cam.x + VW) / DT);
+      const vy0 = Math.floor(cam.y / DT), vy1 = Math.floor((cam.y + VH) / DT);
+      const keys = [...dirty].sort((a, b) => a - b);
+      dirty.clear();
+      const rows = [];
+      let row = null, run = null;
+      for (const k of keys) {
+        const ty = Math.floor(k / 65536) - DOFF, tx = k % 65536 - DOFF;
+        if (ty < vy0 || ty > vy1 || tx < vx0 || tx > vx1) continue;
+        if (!row || row.ty !== ty) { row = { ty, runs: [] }; rows.push(row); run = null; }
+        if (run && run[1] === tx - 1) run[1] = tx;
+        else { run = [tx, tx]; row.runs.push(run); }
+      }
+      const out = [];
+      let open = [];
+      for (const r of rows) {
+        const next = [];
+        for (const [a, b] of r.runs) {
+          const up = open.find(o => o.a === a && o.b === b && o.ty1 === r.ty - 1);
+          if (up) { up.ty1 = r.ty; next.push(up); }
+          else { const o = { a, b, ty0: r.ty, ty1: r.ty }; out.push(o); next.push(o); }
+        }
+        open = next;
+      }
+      return out.map(o => ({
+        x0: Math.max(cam.x, o.a * DT), y0: Math.max(cam.y, o.ty0 * DT),
+        x1: Math.min(cam.x + VW, (o.b + 1) * DT), y1: Math.min(cam.y + VH, (o.ty1 + 1) * DT),
+      }));
     }
     const reach = c => SPRITE * c.s * 0.5 + 6;
 
@@ -478,16 +561,23 @@
       if (!c) throw new Error('canvas memory is full');
       return c;
     }
+    // the part of a sprite anything is drawn on, in sprite units around its middle: the leaves (or blades),
+    // their shadow (offset 2, 4 and blurred 6) and a little to spare. The empty corners are cut away, because
+    // painting a picture costs the same for its clear pixels as for its leaves, and the leaves overlap many deep
+    const BOUNDS = { c: [-38, -36, 42, 48], g: [-42, -33, 46, 26] };
     function sized(l) {
       const key = (l.grass ? 'g' : 'c') + l.tier + ':' + l.v + ':' + l.s;
       let img = sizedCache.get(key);
       if (img) return img;
       const src = l.grass ? grassSprites[l.tier][l.v] : cloverSprites[l.tier][l.v];
-      const n = Math.max(2, Math.round(SPRITE * l.s * dpr));
-      img = document.createElement('canvas'); img.width = img.height = n;
+      const n = Math.max(2, Math.round(SPRITE * l.s * dpr)), k = n / SPRITE, b = BOUNDS[l.grass ? 'g' : 'c'];
+      const x0 = Math.max(0, Math.floor((SPRITE / 2 + b[0]) * k)), y0 = Math.max(0, Math.floor((SPRITE / 2 + b[1]) * k));
+      const x1 = Math.min(n, Math.ceil((SPRITE / 2 + b[2]) * k)), y1 = Math.min(n, Math.ceil((SPRITE / 2 + b[3]) * k));
+      img = document.createElement('canvas'); img.width = x1 - x0; img.height = y1 - y0;
+      img.ox = x0; img.oy = y0; // where the cut-out sits inside the full n x n picture
       const c = ctx2d(img);
       c.imageSmoothingQuality = 'high';
-      c.drawImage(src, 0, 0, n, n);
+      c.drawImage(src, -x0, -y0, n, n);
       sizedCache.set(key, img);
       return img;
     }
@@ -500,37 +590,37 @@
 
     // paint one rectangle of the meadow onto a canvas whose top-left pixel is world point (ox, oy).
     // "rest" paints every leaf where it sleeps; otherwise where it is right now
-    function paint(c, ox, oy, x0, y0, x1, y1, rest) {
+    function paint(c, ox, oy, { x0, y0, x1, y1 }, rest) {
       c.save();
       c.setTransform(1, 0, 0, 1, 0, 0);
-      const px = Math.floor((x0 - ox) * dpr), py = Math.floor((y0 - oy) * dpr);
-      const pw = Math.ceil((x1 - x0) * dpr) + 1, ph = Math.ceil((y1 - y0) * dpr) + 1;
+      const px = Math.round((x0 - ox) * dpr), py = Math.round((y0 - oy) * dpr);
+      const pw = Math.round((x1 - ox) * dpr) - px, ph = Math.round((y1 - oy) * dpr) - py;
       c.beginPath(); c.rect(px, py, pw, ph); c.clip();
       c.fillStyle = '#0e1410'; c.fillRect(px, py, pw, ph);
       const T = Math.round(TILE * dpr);
       for (let ty = Math.floor(Math.max(0, y0) / TILE) * TILE; ty < Math.min(y1, WH); ty += TILE)
         for (let tx = Math.floor(Math.max(0, x0) / TILE) * TILE; tx < Math.min(x1, WW); tx += TILE)
           c.drawImage(soilTile, Math.round((tx - ox) * dpr), Math.round((ty - oy) * dpr), T, T);
+      // does a picture centred at (x, y) reaching r touch the rectangle? (with a pixel to spare for rounding)
+      const pad = 2 / dpr;
+      const hits = (x, y, r) => !(x + r + pad < x0 || x - r - pad > x1 || y + r + pad < y0 || y - r - pad > y1);
       const m = rest ? 56 : 140;
       const list = near(x0 - m, y0 - m, x1 + m, y1 + m).sort((a, b) => a.order - b.order);
-      const at = l => rest ? [l.hx, l.hy, 0] : [l.hx + l.ox, l.hy + l.oy, l.rot];
       const leaf = l => {
-        const [x, y, rot] = at(l), r = reach(l);
-        if (x + r < x0 || x - r > x1 || y + r < y0 || y - r > y1) return;
-        const img = sized(l);
-        c.setTransform(1, 0, 0, 1, 0, 0);
-        c.drawImage(img, Math.round((x - ox) * dpr - img.width / 2), Math.round((y - oy) * dpr - img.height / 2));
+        const x = rest ? l.hx : l.hx + l.ox, y = rest ? l.hy : l.hy + l.oy, rot = rest ? 0 : l.rot;
+        if (!hits(x, y, reach(l))) return;
+        const img = sized(l), lx = Math.round((x - ox) * dpr - l.hw), ly = Math.round((y - oy) * dpr - l.hw);
+        c.drawImage(img, lx + img.ox, ly + img.oy);
         if (decor && l.tier === 2 && !l.grass && l.deco < decor.rate) {
+          // kept on the same whole pixel as its leaf, so it moves exactly when the leaf does
           const img = decor.sprites[l.dv], d = SPRITE * l.s * l.dd * 0.5, k = img.width / dpr / 2;
-          c.setTransform(1, 0, 0, 1, 0, 0);
-          c.drawImage(img, Math.round((x + Math.cos(l.da + rot) * d - k - ox) * dpr), Math.round((y + Math.sin(l.da + rot) * d - k - oy) * dpr));
+          c.drawImage(img, lx + Math.round((Math.cos(l.da + rot) * d - k) * dpr + l.hw), ly + Math.round((Math.sin(l.da + rot) * d - k) * dpr + l.hw));
         }
       };
       let i = 0;
       for (; i < list.length && list[i].z < HIDDEN_Z; i++) leaf(list[i]);
       for (const h of hidden) {
-        const r = SPRITE * h.s * 0.7;
-        if (h.x + r < x0 || h.x - r > x1 || h.y + r < y0 || h.y - r > y1) continue;
+        if (!hits(h.x, h.y, SPRITE * h.s * 0.7)) continue;
         const pop = !rest && h.found ? 1 + Math.sin(Math.min(h.t, 1) * Math.PI) * 0.18 : 1;
         blit(c, threeSprites[h.rk], h.x, h.y, 0, h.s * pop, ox, oy);
         if (!rest && h.found && h.lit) {
@@ -539,17 +629,17 @@
           c.globalAlpha = 1;
         }
       }
+      c.setTransform(1, 0, 0, 1, 0, 0);
       for (; i < list.length; i++) leaf(list[i]);
       // the light of the hour, painted into the picture itself (no extra layers for the browser to blend every frame)
       if (light.length) {
-        c.setTransform(1, 0, 0, 1, 0, 0);
         for (const [op, color] of light) { c.globalCompositeOperation = op; c.fillStyle = color; c.fillRect(px, py, pw, ph); }
         c.globalCompositeOperation = 'source-over';
       }
       // a written clover carries a small white blossom above the leaves, so you can tell from afar that someone wrote there
       for (const h of hidden) {
         if (h.kind !== 'happy' || (!rest && h.found && h.lit)) continue;
-        if (h.x + 28 < x0 || h.x - 28 > x1 || h.y + 28 < y0 || h.y - 28 > y1) continue;
+        if (!hits(h.x, h.y, 28)) continue;
         blossom(c, h, ox, oy);
       }
       c.restore();
@@ -657,29 +747,66 @@
       if (img) { chunks.delete(key); chunks.set(key, img); return img; }
       img = document.createElement('canvas');
       img.width = img.height = Math.round(CHUNK * dpr);
-      paint(ctx2d(img), i * CHUNK, j * CHUNK, i * CHUNK, j * CHUNK, (i + 1) * CHUNK, (j + 1) * CHUNK, true);
+      paint(ctx2d(img), i * CHUNK, j * CHUNK, { x0: i * CHUNK, y0: j * CHUNK, x1: (i + 1) * CHUNK, y1: (j + 1) * CHUNK }, true);
       chunks.set(key, img);
       if (chunks.size > chunkMax) chunks.delete(chunks.keys().next().value);
       return img;
+    }
+    // while nothing else is happening, paint the sleeping pictures around the view, nearest first,
+    // so moving there is only a copy instead of a pause to paint
+    const idle = window.requestIdleCallback ? fn => requestIdleCallback(fn) : fn => setTimeout(() => fn({ timeRemaining: () => 10 }), 50);
+    let prefetching = false;
+    function prefetch() {
+      if (prefetching) return;
+      prefetching = true;
+      idle(deadline => {
+        prefetching = false;
+        if (!VW || !soilTile) return;
+        // not while the field is moving: wait until it rests (a still mouse resting on it is fine)
+        if ((raf && !calm) || gesture) { setTimeout(prefetch, 250); return; }
+        const i0 = Math.max(0, Math.floor(cam.x / CHUNK) - 1), i1 = Math.min(Math.ceil(WW / CHUNK) - 1, Math.floor((cam.x + VW) / CHUNK) + 1);
+        const j0 = Math.max(0, Math.floor(cam.y / CHUNK) - 1), j1 = Math.min(Math.ceil(WH / CHUNK) - 1, Math.floor((cam.y + VH) / CHUNK) + 1);
+        const mx = (cam.x + VW / 2) / CHUNK - 0.5, my = (cam.y + VH / 2) / CHUNK - 0.5;
+        const todo = [];
+        for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) if (!chunks.has(i + ',' + j)) todo.push([i, j]);
+        if (!todo.length) return;
+        todo.sort((a, b) => Math.hypot(a[0] - mx, a[1] - my) - Math.hypot(b[0] - mx, b[1] - my));
+        do chunk(...todo.shift()); while (todo.length && deadline.timeRemaining() > 12);
+        if (todo.length) prefetch();
+      });
     }
     function forget(x0, y0, x1, y1) {
       for (let j = Math.floor((y0 - 60) / CHUNK); j <= Math.floor((y1 + 60) / CHUNK); j++)
         for (let i = Math.floor((x0 - 60) / CHUNK); i <= Math.floor((x1 + 60) / CHUNK); i++) chunks.delete(i + ',' + j);
     }
-    function liveBounds() {
-      let b = null;
-      const add = (x, y, r) => {
-        if (!b) b = { x0: x - r, y0: y - r, x1: x + r, y1: y + r };
-        else { b.x0 = Math.min(b.x0, x - r); b.y0 = Math.min(b.y0, y - r); b.x1 = Math.max(b.x1, x + r); b.y1 = Math.max(b.y1, y + r); }
-      };
-      for (const c of moving) add(c.hx + c.ox, c.hy + c.oy, reach(c) + 2);
-      for (const h of hidden) if (h.lit || (h.found && h.t < 0.999)) add(h.x, h.y, SPRITE * h.s * 0.75);
-      return b;
+    // after the view is copied from the sleeping pictures, everything awake is painted again on top:
+    // where it is now, and where it sleeps (the picture shows it there)
+    function markLive() {
+      for (const c of moving) { mark(c.hx + c.ox, c.hy + c.oy, reach(c) + 2); mark(c.hx, c.hy, reach(c) + 2); }
+      for (const h of hidden) if (h.lit || (h.found && h.t < 0.999)) mark(h.x, h.y, SPRITE * h.s * 0.75);
     }
 
+    // rectangles far apart are painted on their own; ones close together share one box, as long as that box
+    // isn't much bigger than what they cover (a clip made of many rectangles is slow to paint through)
+    function clusters(rects) {
+      const area = r => (r.x1 - r.x0) * (r.y1 - r.y0);
+      const out = rects.map(r => ({ x0: r.x0, y0: r.y0, x1: r.x1, y1: r.y1, a: area(r) }));
+      for (let merged = true; merged && out.length > 1;) {
+        merged = false;
+        for (let i = 0; i < out.length && !merged; i++) for (let j = i + 1; j < out.length && !merged; j++) {
+          const p = out[i], q = out[j];
+          const u = { x0: Math.min(p.x0, q.x0), y0: Math.min(p.y0, q.y0), x1: Math.max(p.x1, q.x1), y1: Math.max(p.y1, q.y1) };
+          if (area(u) <= (p.a + q.a) * 1.6) { u.a = p.a + q.a; out[i] = u; out.splice(j, 1); merged = true; }
+        }
+      }
+      return out;
+    }
+    let drew = false; // whether the last frame painted anything
     function draw() {
+      drew = false;
       if (!VW || !soilTile) return;
       if (full) {
+        drew = true;
         full = false;
         ctx.save();
         ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -688,13 +815,13 @@
           for (let i = Math.max(0, Math.floor(cam.x / CHUNK)); i * CHUNK < Math.min(WW, cam.x + VW); i++)
             ctx.drawImage(chunk(i, j), Math.round((i * CHUNK - cam.x) * dpr), Math.round((j * CHUNK - cam.y) * dpr));
         ctx.restore();
-        dirty = liveBounds();
+        dirty.clear();
+        markLive();
+        prefetch();
       }
-      if (!dirty) return;
-      const x0 = Math.max(cam.x, Math.floor(dirty.x0)), y0 = Math.max(cam.y, Math.floor(dirty.y0));
-      const x1 = Math.min(cam.x + VW, Math.ceil(dirty.x1)), y1 = Math.min(cam.y + VH, Math.ceil(dirty.y1));
-      dirty = null;
-      if (x1 > x0 && y1 > y0) paint(ctx, cam.x, cam.y, x0, y0, x1, y1, false);
+      if (!dirty.size) return;
+      drew = true;
+      for (const box of clusters(dirtyRects())) paint(ctx, cam.x, cam.y, box, false);
     }
 
     /* ---------- the map in the corner ---------- */
@@ -704,18 +831,28 @@
       mini.width = Math.round(w * dpr); mini.height = Math.round(hgt * dpr);
       drawMini();
     }
-    function drawMini() {
+    // the dots are drawn once into their own picture; moving the view only redraws the frame around it
+    let miniDots = null, miniInk = '';
+    function drawMini(dots = true) {
       const w = mini.width, hgt = mini.height, k = w / WW;
       if (!w) return;
+      if (dots || !miniDots || miniDots.width !== w || miniDots.height !== hgt) {
+        if (!miniDots) miniDots = document.createElement('canvas');
+        miniDots.width = w; miniDots.height = hgt;
+        const dc = miniDots.getContext('2d');
+        const css = getComputedStyle(mini);
+        const col = { empty: css.getPropertyValue('--map-empty'), gold: css.getPropertyValue('--gold'), dot: css.getPropertyValue('--map-dot') };
+        miniInk = css.color;
+        for (const h of hidden) {
+          if (!h.found && h.kind !== 'happy') continue;
+          dc.fillStyle = h.kind === 'empty' ? col.empty : h.mine ? col.gold : col.dot;
+          dc.beginPath(); dc.arc(h.x * k, h.y * k, 1.8 * dpr, 0, Math.PI * 2); dc.fill();
+        }
+      }
       mctx.setTransform(1, 0, 0, 1, 0, 0);
       mctx.clearRect(0, 0, w, hgt);
-      const css = getComputedStyle(mini);
-      for (const h of hidden) {
-        if (!h.found && h.kind !== 'happy') continue;
-        mctx.fillStyle = h.kind === 'empty' ? css.getPropertyValue('--map-empty') : h.mine ? css.getPropertyValue('--gold') : css.getPropertyValue('--map-dot');
-        mctx.beginPath(); mctx.arc(h.x * k, h.y * k, 1.8 * dpr, 0, Math.PI * 2); mctx.fill();
-      }
-      mctx.strokeStyle = css.color; mctx.lineWidth = 1.25 * dpr;
+      mctx.drawImage(miniDots, 0, 0);
+      mctx.strokeStyle = miniInk; mctx.lineWidth = 1.25 * dpr;
       const vx = Math.max(0, cam.x * k), vy = Math.max(0, cam.y * k);
       mctx.strokeRect(vx + 0.5, vy + 0.5, Math.min(w - 1, VW * k) - 1, Math.min(hgt - 1, VH * k) - 1);
     }
@@ -733,8 +870,12 @@
       }
       const e = step(now);
       draw();
-      if (camMoved) { camMoved = false; drawMini(); }
+      if (camMoved) { camMoved = false; drawMini(false); }
+      // calm: nothing on screen changed this frame (a resting hand still holds leaves aside, but they don't move)
+      calm = !drew;
+      pace(now, drew);
       raf = (e > 0.4 || pointer.active || sweeping || camAnim || moving.size) ? requestAnimationFrame(tick) : (last = 0);
+      if (slow && !easing) easing = setTimeout(easeOff, 400);
     }
     function wake() { if (!raf) raf = requestAnimationFrame(tick); }
 
