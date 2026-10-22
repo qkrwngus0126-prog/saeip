@@ -317,20 +317,24 @@
     const SHARP_KEY = 'happy:field-sharp';
     let sharp = 0;
     try { sharp = Math.min(SHARP.length - 1, Math.max(0, parseInt(localStorage.getItem(SHARP_KEY), 10) || 0)); } catch (_) { /* 처음 값으로 */ }
+    // for checking on a real device: ?sharp=1 (or 1.25, 1.5) tries one sharpness for this visit only, ?fps shows how smoothly it draws
+    const ASK = new URLSearchParams(location.search);
+    const forced = SHARP.indexOf(parseFloat(ASK.get('sharp')));
+    if (forced >= 0) sharp = forced;
     const gaps = [];
     let lastFrame = 0, slow = false, easing = 0, calm = true;
     function pace(now, busy) {
       if (busy && lastFrame && now - lastFrame < 250) gaps.push(now - lastFrame);
       lastFrame = busy ? now : 0;
-      if (gaps.length >= 90) {
+      if (gaps.length >= 60) {
         gaps.sort((a, b) => a - b);
-        if (gaps[45] > 26) slow = true; // most of the last 90 frames took longer than about 38 frames a second allows
+        if (gaps[30] > 20) slow = true; // most of the last 60 frames took longer than 50 frames a second allows
         gaps.length = 0;
       }
     }
     function easeOff() {
       easing = 0;
-      if (!slow) return;
+      if (!slow || forced >= 0) return;
       // only while every leaf is at rest, so the picture never changes under the hand
       if ((raf && !calm) || gesture || camAnim || sweeping) { easing = setTimeout(easeOff, 400); return; }
       slow = false;
@@ -352,7 +356,7 @@
       const rebuild = !cloverSprites.length || nd !== dpr;
       dpr = nd;
       canvas.width = Math.round(VW * dpr); canvas.height = Math.round(VH * dpr);
-      if (rebuild) { buildSprites(); buildSoil(); chunks.clear(); blossoms = {}; sizedCache = new Map(); items.forEach(pin); if (airKey) { const [p, se, w] = airKey.split(','); airKey = ''; api.setAtmosphere({ phase: p, season: se, weather: w }); } }
+      if (rebuild) { buildSprites(); buildSoil(); chunks.clear(); blossoms = {}; sizedCache = new Map(); sizedGen++; items.forEach(pin); if (airKey) { const [p, se, w] = airKey.split(','); airKey = ''; api.setAtmosphere({ phase: p, season: se, weather: w }); } }
       chunkMax = Math.max(24, Math.ceil(VW / CHUNK + 2) * Math.ceil(VH / CHUNK + 2) * 2);
       if (!items.length) { buildItems(); bury(hidden); index(); }
       if (first) { cam.x = (WW - VW) / 2; cam.y = (WH - VH) / 2; }
@@ -408,6 +412,7 @@
           if (dx * dx + dy * dy < R * R) moving.add(c);
         }
       }
+      const damp = Math.pow(0.78, k), settle = Math.pow(0.965, k);
       for (const c of moving) {
         let tx = c.rx, ty = c.ry;
         if (p.active) {
@@ -425,10 +430,8 @@
           }
         }
         c.vx += (tx - c.ox) * 0.075 * k; c.vy += (ty - c.oy) * 0.075 * k;
-        const damp = Math.pow(0.78, k);
         c.vx *= damp; c.vy *= damp;
         c.ox += c.vx * k; c.oy += c.vy * k;
-        const settle = Math.pow(0.965, k);
         c.rx *= settle; c.ry *= settle;
         c.rot = 0; // leaves slide aside without turning; turning made every frame much slower to paint
         const e = Math.abs(c.vx) + Math.abs(c.vy) + Math.abs(c.rx) * 0.05;
@@ -552,12 +555,12 @@
 
     // each leaf picture is kept ready at the exact size it is drawn, so painting a leaf is a plain copy:
     // no scaling and no turning, which is what keeps digging smooth on slower phones
-    let sizedCache = new Map();
+    let sizedCache = new Map(), sizedGen = 0; // the generation changes whenever the cached pictures are dropped
     // phones cap how much canvas memory a page may hold; when a new picture is refused,
     // drop the cached pictures (they are redrawn on demand) and try once more
     function ctx2d(cv) {
       let c = cv.getContext('2d');
-      if (!c) { try { chunks.clear(); sizedCache = new Map(); } catch (_) { /* not set up yet */ } c = cv.getContext('2d'); }
+      if (!c) { try { chunks.clear(); sizedCache = new Map(); sizedGen++; } catch (_) { /* not set up yet */ } c = cv.getContext('2d'); }
       if (!c) throw new Error('canvas memory is full');
       return c;
     }
@@ -566,9 +569,10 @@
     // painting a picture costs the same for its clear pixels as for its leaves, and the leaves overlap many deep
     const BOUNDS = { c: [-38, -36, 42, 48], g: [-42, -33, 46, 26] };
     function sized(l) {
+      if (l.gen === sizedGen) return l.img;
       const key = (l.grass ? 'g' : 'c') + l.tier + ':' + l.v + ':' + l.s;
       let img = sizedCache.get(key);
-      if (img) return img;
+      if (img) { l.img = img; l.gen = sizedGen; return img; }
       const src = l.grass ? grassSprites[l.tier][l.v] : cloverSprites[l.tier][l.v];
       const n = Math.max(2, Math.round(SPRITE * l.s * dpr)), k = n / SPRITE, b = BOUNDS[l.grass ? 'g' : 'c'];
       const x0 = Math.max(0, Math.floor((SPRITE / 2 + b[0]) * k)), y0 = Math.max(0, Math.floor((SPRITE / 2 + b[1]) * k));
@@ -579,6 +583,7 @@
       c.imageSmoothingQuality = 'high';
       c.drawImage(src, -x0, -y0, n, n);
       sizedCache.set(key, img);
+      l.img = img; l.gen = sizedGen;
       return img;
     }
 
@@ -803,6 +808,10 @@
     }
     let drew = false; // whether the last frame painted anything
     function draw() {
+      if (meter) { const t = performance.now(); paintFrame(); meter.ms += performance.now() - t; return; }
+      paintFrame();
+    }
+    function paintFrame() {
       drew = false;
       if (!VW || !soilTile) return;
       if (full) {
@@ -1036,6 +1045,24 @@
       if (!h) return;
       if (inView(h.x, h.y, 90)) sweep(h, done);
       else flyTo(h.x, h.y, () => sweep(h, done));
+    }
+
+    // ?fps: frames a second, the time spent painting them, and the sharpness in use
+    let meter = null;
+    if (ASK.has('fps')) {
+      meter = { el: document.createElement('div'), frames: 0, ms: 0, t0: performance.now() };
+      meter.el.style.cssText = 'position:fixed;left:8px;bottom:8px;z-index:99;padding:4px 8px;border-radius:6px;background:rgba(0,0,0,.7);color:#bff5c9;font:12px/1.4 ui-monospace,monospace;pointer-events:none;white-space:pre';
+      document.body.appendChild(meter.el);
+      const count = now => {
+        meter.frames++;
+        if (now - meter.t0 >= 1000) {
+          const fps = meter.frames * 1000 / (now - meter.t0);
+          meter.el.textContent = `${fps.toFixed(0)} fps · paint ${(meter.ms / meter.frames).toFixed(1)} ms · ${dpr}x · ${VW | 0}×${VH | 0}`;
+          meter.frames = 0; meter.ms = 0; meter.t0 = now;
+        }
+        requestAnimationFrame(count);
+      };
+      requestAnimationFrame(count);
     }
 
     new ResizeObserver(() => { resize(); }).observe(field);
