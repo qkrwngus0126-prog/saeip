@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>10초 세잎클로버 찾기 · saeip</title>
+<!-- 릴스 녹화용 페이지라서 검색에는 나오지 않게 해요 -->
+<meta name="robots" content="noindex">
+<meta name="theme-color" content="#050806">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='8 6 88 92'%3E%3Cstyle%3Esvg%7Bfill:%232f8a4f%3Bstroke:%232f8a4f%7D%40media (prefers-color-scheme:dark)%7Bsvg%7Bfill:%237fcf95%3Bstroke:%237fcf95%7D%7D%3C/style%3E%3Cpath d='M36.1 21.2A17 17 0 1 1 57.8 46.1L58.2 46.9A17 17 0 1 1 55.1 75.0M45.4 70.2A17 17 0 0 1 14.6 70.2M50 80Q51 89 57 95' fill='none' stroke-width='10' stroke-linecap='round' stroke-linejoin='round'/%3E%3Ccircle cx='23.5' cy='61' r='5.2'/%3E%3Ccircle cx='36.5' cy='61' r='5.2'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700&family=Noto+Serif+KR:wght@500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="challenge.css?v=2">
+</head>
+<body>
+
+<!-- 영상에 담기는 화면: 들판과 글자를 모두 이 캔버스 하나에 그려요 (1080x1920 기준, 창 크기에 맞춰 줄이거나 키워요) -->
+<main class="stage" id="stage">
+  <canvas class="meadow" id="meadow" role="img" aria-label="네잎클로버 들판. 그 사이 어딘가에 세잎클로버가 하나 숨어 있습니다."></canvas>
+</main>
+
+<!-- 나만 보는 컨트롤 (녹화 전에 숨기기) -->
+<aside class="panel" id="panel" aria-label="챌린지 컨트롤">
+  <div class="panel-head">
+    <b>세잎 챌린지</b>
+    <button type="button" class="ghost" id="hide-btn" title="H">숨기기</button>
+  </div>
+
+  <div class="group first">
+    <span class="label">영상 <small>(1080×1920 · 약 20초)</small></span>
+    <button type="button" class="primary" id="video-btn">영상 만들기</button>
+    <p class="status" id="video-status" aria-live="polite">누르면 처음부터 끝까지 재생하면서 그대로 영상 파일로 저장해요.</p>
+    <div class="video-out" id="video-out" hidden>
+      <button type="button" class="primary" id="save-btn">영상 저장</button>
+      <button type="button" id="share-btn" hidden>공유 (인스타로 보내기)</button>
+    </div>
+  </div>
+
+  <div class="group">
+    <span class="label">미리 보기</span>
+    <div class="pair">
+      <button type="button" id="start-btn" title="Space">재생</button>
+      <button type="button" id="reset-btn" title="Esc">처음으로</button>
+    </div>
+  </div>
+
+  <div class="group">
+    <span class="label">레벨 <small>(확대 정도)</small></span>
+    <div class="seg" id="levels" role="group" aria-label="레벨">
+      <button type="button" data-level="1" title="1">1 크게</button>
+      <button type="button" data-level="2" title="2">2 중간</button>
+      <button type="button" data-level="3" title="3">3 원래</button>
+    </div>
+  </div>
+
+  <div class="group">
+    <span class="label">배치</span>
+    <button type="button" id="shuffle-btn" title="N">새로 섞기</button>
+    <div class="seed-row">
+      <span class="seed">시드 <b id="seed-now">-</b></span>
+      <button type="button" class="ghost small" id="copy-btn">링크 복사</button>
+    </div>
+    <form class="seed-form" id="seed-form">
+      <input id="seed-in" inputmode="numeric" pattern="[0-9]*" maxlength="9" placeholder="시드 번호" aria-label="시드 번호">
+      <button type="submit">불러오기</button>
+    </form>
+  </div>
+
+  <div class="group">
+    <span class="label">정답 확인 <small>(녹화용 아님)</small></span>
+    <div class="pair">
+      <button type="button" id="answer-btn" aria-pressed="false" title="A">정답 보기</button>
+      <button type="button" id="answer-png">정답 이미지 저장</button>
+    </div>
+  </div>
+
+  <div class="group">
+    <span class="label">화면</span>
+    <label class="row"><span>빛</span>
+      <select id="light-sel">
+        <option value="day">낮</option>
+        <option value="dawn">새벽</option>
+        <option value="dusk">해 질 녘</option>
+        <option value="night">밤</option>
+      </select>
+    </label>
+    <label class="row check"><input type="checkbox" id="chip-chk" checked> <span>레벨 표시</span></label>
+  </div>
+
+  <p class="help">Space 재생 · Esc 처음으로 · H 숨기기/보이기 · A 정답 · N 새로 섞기 · 1·2·3 레벨<br>
+    영상에는 컨트롤과 정답 원이 들어가지 않아요. 화면 녹화로 찍을 때는 숨긴 뒤 화면을 누르면 재생돼요. 오른쪽 위 모서리나 H를 누르면 컨트롤이 다시 보여요.</p>
+</aside>
+<button type="button" class="unhide" id="unhide" aria-label="컨트롤 보이기" hidden></button>
+
+<script src="js/challenge.js?v=2"></script>
+</body>
+</html>
