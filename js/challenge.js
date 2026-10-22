@@ -409,7 +409,16 @@
   const cleanSeed = v => { const n = parseInt(String(v).replace(/\D/g, ''), 10); return n > 0 && n < 1e9 ? n : 0; };
   let seed = cleanSeed(q.get('seed')) || newSeed();
   let level = LEVELS[q.get('level')] ? +q.get('level') : 1;
-  let lightPhase = HOURS[q.get('light')] ? q.get('light') : 'day';
+  // each level keeps its own light (kept in this browser), so level 1 can be day while level 3 is night
+  const LIGHT_KEY = 'saeip:challenge-light';
+  const lights = { 1: 'day', 2: 'day', 3: 'day' };
+  try { const saved = JSON.parse(localStorage.getItem(LIGHT_KEY) || '{}'); for (const n in lights) if (HOURS[saved[n]]) lights[n] = saved[n]; } catch (_) { /* 이번 방문에만 */ }
+  if (HOURS[q.get('light')]) lights[level] = q.get('light');
+  let lightPhase = lights[level];
+  function setLight(v) {
+    lightPhase = lights[level] = v;
+    try { localStorage.setItem(LIGHT_KEY, JSON.stringify(lights)); } catch (_) { /* 이번 방문에만 */ }
+  }
   let showChip = true, answerOn = false;
   let layout = null, sprites = null, spriteKey = '', three = null, threeKey = '', baseKey = '';
 
@@ -556,7 +565,7 @@
     history.replaceState(null, '', u);
   }
   function rebuild() { reset(); render(); sync(); }
-  function setLevel(n) { if (!busy && LEVELS[n] && n !== level) { level = n; rebuild(); } }
+  function setLevel(n) { if (!busy && LEVELS[n] && n !== level) { level = n; lightPhase = lights[n]; rebuild(); } }
   function shuffle() { if (!busy) { seed = newSeed(); rebuild(); } }
   function toggleAnswer(on = !answerOn) {
     answerOn = on;
@@ -583,7 +592,7 @@
   $('hide-btn').addEventListener('click', () => setClean(true));
   unhide.addEventListener('click', () => setClean(false));
   document.querySelectorAll('#levels button').forEach(b => b.addEventListener('click', () => setLevel(+b.dataset.level)));
-  $('light-sel').addEventListener('change', e => { lightPhase = e.target.value; render(); sync(); });
+  $('light-sel').addEventListener('change', e => { setLight(e.target.value); render(); sync(); });
   $('chip-chk').addEventListener('change', e => { showChip = e.target.checked; show(); });
   $('seed-form').addEventListener('submit', e => {
     e.preventDefault();
