@@ -571,11 +571,11 @@
         h('span', { class: 'eyebrow' }, tr('plantedOn', { d: localDay(r.created_at) }) + (r.updated_at ? ' · ' + tr('edited') : '')),
         mine
           ? h('div', { class: 'row' },
-              shareBtn(r),
+              shareBtn(r), cardBtn(r),
               h('button', { type: 'button', class: 'btn', onclick: () => openWrite({ record: r }) }, tr('edit')),
               h('button', { type: 'button', class: 'btn danger', onclick: () => openDelete(r) }, tr('del')))
           : h('div', { class: 'row' },
-              shareBtn(r),
+              shareBtn(r), cardBtn(r),
               h('button', { type: 'button', class: 'btn quiet', onclick: () => { if (requireLogin({ type: 'report', id: r.id }, tr('loginWhyReport'))) openReport(r.id); } }, tr('report')))),
     ]);
   }
@@ -593,6 +593,73 @@
       try { await navigator.clipboard.writeText(url); toast(tr('linkCopied')); }
       catch (_) { window.prompt(tr('shareLink'), url); }
     } }, tr('shareLink'));
+  }
+
+  // 스토리용 그림: 들판을 배경으로 그 세잎의 한 줄을 담은 세로 이미지를 만들어 저장하거나 바로 공유해요
+  function cardBtn(r) {
+    return h('button', { type: 'button', class: 'btn', onclick: () => openCard(r) }, tr('cardBtn'));
+  }
+  const CARD_STYLES = ['paper', 'night', 'meadow'];
+  async function openCard(r) {
+    let style = 'night';
+    try { const v = localStorage.getItem('happy:card-style'); if (CARD_STYLES.includes(v)) style = v; } catch (_) { /* 밤 들판으로 */ }
+    loading(tr('cardMaking'));
+    // 들판은 시트를 연 뒤에도 움직일 수 있으니, 처음 모습을 한 장 떠 둬요
+    const live = document.querySelector('.field > canvas:not(.minimap)');
+    const field = document.createElement('canvas');
+    if (live && live.width) { field.width = live.width; field.height = live.height; const fc = field.getContext('2d'); if (fc) fc.drawImage(live, 0, 0); }
+    const img = h('img', { alt: r.line });
+    const save = h('a', { class: 'btn' }, tr('cardSave'));
+    const share = h('button', { type: 'button', class: 'btn primary', hidden: true }, tr('cardShare'));
+    let url = null, file = null, busy = 0;
+    async function make() {
+      const ticket = ++busy;
+      img.style.opacity = '0.4';
+      let blob;
+      try {
+        blob = await window.makeCard({
+          style, line: r.line,
+          eyebrow: [dot(r.happy_on), r.place].filter(Boolean).join(' · '),
+          photoUrl: r.photo_path ? api.photoUrl(r.photo_path) : null,
+          field,
+        });
+      } catch (e) { if (ticket === busy) toast(tr('cardFail') + ' ' + errMsg(e)); return false; }
+      if (ticket !== busy) return true; // 그새 다른 모양을 골랐어요
+      if (url) URL.revokeObjectURL(url);
+      url = URL.createObjectURL(blob);
+      file = new File([blob], 'saeip-' + String(r.id).slice(0, 8) + '-' + style + '.jpg', { type: 'image/jpeg' });
+      img.src = url; img.style.opacity = '';
+      save.href = url; save.download = file.name;
+      let canShare = false;
+      try { canShare = !!(navigator.canShare && navigator.canShare({ files: [file] })); } catch (_) { /* 저장만 */ }
+      share.hidden = !canShare;
+      save.className = 'btn' + (canShare ? '' : ' primary');
+      return true;
+    }
+    share.addEventListener('click', async () => {
+      try { await navigator.share({ files: [file] }); }
+      catch (e) { if (!e || e.name !== 'AbortError') toast(errMsg(e)); }
+    });
+    const chips = CARD_STYLES.map(k => h('button', {
+      type: 'button', 'aria-pressed': String(k === style),
+      onclick(e) {
+        if (style === k) return;
+        style = k;
+        try { localStorage.setItem('happy:card-style', k); } catch (_) { /* 이번만 */ }
+        for (const b of chips) b.setAttribute('aria-pressed', String(b === e.currentTarget));
+        make();
+      },
+    }, tr('cardStyle_' + k)));
+    if (!(await make())) { open([head(null, tr('cardFail')), h('div', { class: 'row end' }, h('button', { type: 'button', class: 'btn quiet', onclick: () => openRead(r.id) }, tr('back')))]); return; }
+    open([
+      head(tr('cardEyebrow'), tr('cardTitle')),
+      h('div', { class: 'seg card-styles', role: 'group', 'aria-label': tr('cardStyleLabel') }, chips),
+      h('figure', { class: 'card-prev' }, img),
+      h('p', { class: 'note' }, tr('cardHint')),
+      h('div', { class: 'row end' },
+        h('button', { type: 'button', class: 'btn quiet', onclick: () => openRead(r.id) }, tr('back')),
+        save, share),
+    ], () => { busy++; if (url) URL.revokeObjectURL(url); });
   }
 
   /* ---------- writing and editing ---------- */

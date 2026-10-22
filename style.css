@@ -296,7 +296,7 @@ button, input, textarea, select { font: inherit; color: inherit; }
   font-size: var(--step-small); cursor: pointer; transition: background-color 160ms ease, color 160ms ease, border-color 160ms ease;
 }
 .seg button:hover { color: var(--ink); }
-.seg button[aria-checked="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.seg button[aria-checked="true"], .seg button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 
 .check { display: flex; align-items: flex-start; gap: 10px; font-size: var(--step-small); cursor: pointer; }
 .check input { margin-top: 4px; width: 16px; height: 16px; accent-color: var(--accent); flex: none; }
@@ -305,6 +305,8 @@ button, input, textarea, select { font: inherit; color: inherit; }
 /* reading */
 .read-photo { margin: 0 -28px; background: #0a0f0c; }
 .read-photo img { display: block; width: 100%; max-height: 52svh; object-fit: contain; }
+.card-prev { margin: 0; display: grid; place-items: center; }
+.card-prev img { display: block; width: min(100%, 300px); aspect-ratio: 9 / 16; border-radius: 16px; box-shadow: 0 18px 40px -18px rgba(0,0,0,0.6); }
 .read-more { white-space: pre-line; color: var(--ink); border-left: 2px solid var(--accent-soft); padding-left: 14px; }
 .badge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 0.8125rem; font-weight: 400; justify-self: start; }
 .badge.warn { background: var(--danger-soft); color: var(--danger); }
