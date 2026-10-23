@@ -24,9 +24,51 @@
 
   const mats = {};
   const cached = (key, make) => mats[key] || (mats[key] = make());
-  // 꽃잎은 벨벳처럼 결이 빛을 받는 재질(sheen)
-  const petalMat = () => cached('petal', () => new T.MeshPhysicalMaterial({ vertexColors: true, side: T.DoubleSide, roughness: 0.55, sheen: 1, sheenRoughness: 0.45, sheenColor: new T.Color('#ffffff'), envMapIntensity: 0.5 }));
-  const plain = (hex, rough = 0.7) => cached(hex + '|' + rough, () => new T.MeshStandardMaterial({ color: hex, roughness: rough, side: T.DoubleSide, envMapIntensity: 0.5 }));
+  /* 그림책 같은 느낌: 명암을 세 단계로만 끊어 칠하는 셀 셰이딩 + 펜으로 그린 듯한 테두리 */
+  const toonRamp = (() => {
+    const tones = [165, 220, 255]; // 그늘 · 반그늘 · 빛
+    const data = new Uint8Array(tones.length * 4);
+    tones.forEach((v, i) => data.set([v, v, v, 255], i * 4));
+    const tex = new T.DataTexture(data, tones.length, 1);
+    tex.minFilter = tex.magFilter = T.NearestFilter;
+    tex.needsUpdate = true;
+    return tex;
+  })();
+  const toon = (o) => new T.MeshToonMaterial({ gradientMap: toonRamp, side: T.DoubleSide, ...o });
+  const petalMat = () => cached('petal', () => toon({ vertexColors: true }));
+  const plain = (hex) => cached('plain' + hex, () => toon({ color: hex }));
+  const lineMat = (hex) => cached('line' + hex, () => new T.LineBasicMaterial({ color: hex, transparent: true, opacity: 0.85 }));
+  const inkOf = (c, k = 0.5) => '#' + shade(c, -k).getHexString();
+
+  // 격자(nu × nv)로 만든 면의 바깥 테두리를 한 바퀴 도는 점 순서
+  function edgeLoop(nu, nv) {
+    const at = (i, j) => j * (nu + 1) + i, out = [];
+    for (let i = 0; i <= nu; i++) out.push(at(i, 0));
+    for (let j = 1; j <= nv; j++) out.push(at(nu, j));
+    for (let i = nu - 1; i >= 0; i--) out.push(at(i, nv));
+    for (let j = nv - 1; j >= 1; j--) out.push(at(0, j));
+    return out;
+  }
+  // 면에 테두리 선을 그려 붙여요
+  function ink(mesh) {
+    const g = mesh.geometry;
+    if (!g.userData.edge) return mesh;
+    if (!g.userData.line) {
+      const lg = new T.BufferGeometry();
+      lg.setAttribute('position', g.attributes.position);
+      lg.setIndex(g.userData.edge);
+      g.userData.line = lg;
+    }
+    mesh.add(new T.LineLoop(g.userData.line, lineMat(g.userData.ink)));
+    return mesh;
+  }
+  // 공처럼 닫힌 모양은 뒤집은 껍데기를 살짝 크게 씌워 테두리를 만들어요
+  function hull(mesh, hex, k = 1.07) {
+    const h = new T.Mesh(mesh.geometry, cached('hull' + hex, () => new T.MeshBasicMaterial({ color: hex, side: T.BackSide })));
+    h.scale.setScalar(k);
+    mesh.add(h);
+    return mesh;
+  }
   const STEM = '#3f6430';
 
   /* 꽃잎 한 장. 밑동이 원점이고 +Y로 자라요. 가장자리는 -Z(꽃 안쪽)로 오므라져요.
@@ -69,6 +111,8 @@
     g.setAttribute('color', new T.Float32BufferAttribute(clr, 3));
     g.setIndex(idx);
     g.computeVertexNormals();
+    g.userData.edge = edgeLoop(nu, nv);
+    g.userData.ink = o.ink || inkOf(o.color);
     return g;
   }
 
@@ -77,7 +121,7 @@
     const pivot = new T.Group();
     pivot.rotation.y = az;
     pivot.position.y = y0;
-    const m = new T.Mesh(geo, material);
+    const m = ink(new T.Mesh(geo, material));
     m.position.z = r0;
     m.rotation.x = tilt;
     pivot.add(m);
@@ -169,7 +213,7 @@
     const geo = petal({ len: 0.4, wid: 0.09, cup: 0.25, bend: 0.06, peak: 0.6, tip: 0.4, base: shade(c, -0.08), color: c, nu: 3, nv: 6 });
     const n = 26;
     for (let k = 0; k < n; k++) place(g, geo, (k / n) * TAU, 1.38 + (k % 3) * 0.06, 0.09, 0.01);
-    const eye = new T.Mesh(new T.SphereGeometry(0.12, 18, 10), plain('#e5b021', 0.85));
+    const eye = hull(new T.Mesh(new T.SphereGeometry(0.12, 18, 10), plain('#f2c230')), '#9a6a10');
     eye.scale.y = 0.45;
     eye.position.y = 0.03;
     g.add(eye);
@@ -184,7 +228,7 @@
       const n = 22;
       for (let k = 0; k < n; k++) place(g, geo, (k / n) * TAU + ring * (TAU / n / 2), 1.42 - ring * 0.14, 0.26, -0.01 * ring);
     }
-    const disc = new T.Mesh(new T.CylinderGeometry(0.29, 0.27, 0.06, 32), plain('#3a2210', 0.95));
+    const disc = hull(new T.Mesh(new T.CylinderGeometry(0.29, 0.27, 0.06, 32), plain('#5a3518')), '#2a160a', 1.04);
     disc.position.y = 0.01;
     g.add(disc);
     const seeds = [];
@@ -216,7 +260,7 @@
       });
     }
     g.add(scatter(floretGeo, petalMat(), list));
-    const core = new T.Mesh(new T.SphereGeometry(R * 0.93, 20, 14), plain(shade(c, -0.35).getStyle(), 0.9));
+    const core = hull(new T.Mesh(new T.SphereGeometry(R * 0.93, 20, 14), plain('#' + shade(c, -0.25).getHexString())), inkOf(c, 0.55), 1.12);
     core.position.y = R * 0.75;
     g.add(core);
     return g;
@@ -367,10 +411,8 @@
     paperTex.repeat.set(2, 2);
     return paperTex;
   }
-  const paperMat = (hex, sheer) => cached('paper' + hex + sheer, () => new T.MeshStandardMaterial({
-    color: hex, map: paperTexture(), bumpMap: paperTexture(), bumpScale: 0.004,
-    roughness: sheer ? 0.7 : 0.88, side: T.DoubleSide,
-    transparent: !!sheer, opacity: sheer ? 0.92 : 1,
+  const paperMat = (hex, sheer) => cached('paper' + hex + sheer, () => toon({
+    color: hex, transparent: !!sheer, opacity: sheer ? 0.94 : 1,
   }));
 
   /* 포장지 한 장: 가운데가 접혀 각이 선 연잎 모양. 밑동이 원점, 바깥(+Z)을 보고 +Y로 서요.
@@ -396,7 +438,9 @@
     g.setAttribute('uv', new T.Float32BufferAttribute(uv, 2));
     g.setIndex(idx);
     g.computeVertexNormals();
-    return new T.Mesh(g, material);
+    g.userData.edge = edgeLoop(nu, nv);
+    g.userData.ink = inkOf(material.color, 0.35);
+    return ink(new T.Mesh(g, material));
   }
 
   const TIE_Y = -0.3;
@@ -428,18 +472,18 @@
     g.add(sleeve);
 
     // 리본: 묶은 띠, 나비 고리 두 개, 늘어진 꼬리 두 개
-    const rm = cached('ribbon' + ribbon, () => new T.MeshPhysicalMaterial({ color: ribbon, roughness: 0.35, sheen: 1, sheenRoughness: 0.3, sheenColor: new T.Color('#ffffff'), side: T.DoubleSide }));
-    const band = new T.Mesh(new T.CylinderGeometry(0.235, 0.235, 0.09, 32, 1, true), rm);
+    const rm = cached('ribbon' + ribbon, () => toon({ color: ribbon }));
+    const band = hull(new T.Mesh(new T.CylinderGeometry(0.235, 0.235, 0.09, 32, 1, true), rm), inkOf(ribbon, 0.4), 1.03);
     band.position.y = TIE_Y;
     g.add(band);
     const front = new T.Vector3(0, TIE_Y, 0.25);
     for (const side of [-1, 1]) {
-      const loop = new T.Mesh(new T.TorusGeometry(0.12, 0.028, 10, 32), rm);
+      const loop = hull(new T.Mesh(new T.TorusGeometry(0.12, 0.028, 10, 32), rm), inkOf(ribbon, 0.4), 1.08);
       loop.scale.set(1.3, 0.62, 0.55);
       loop.position.copy(front).add(new T.Vector3(side * 0.14, 0.03, 0.03));
       loop.rotation.z = side * 0.32;
       g.add(loop);
-      const tail = new T.Mesh(petal({ len: 0.62, wid: 0.1, cup: 0.25, bend: 0.1, peak: 0.9, tip: 0.15, color: ribbon, nu: 4, nv: 10, wave: 0.15 }), rm);
+      const tail = ink(new T.Mesh(petal({ len: 0.62, wid: 0.1, cup: 0.25, bend: 0.1, peak: 0.9, tip: 0.15, color: ribbon, nu: 4, nv: 10, wave: 0.15, ink: inkOf(ribbon, 0.4) }), rm));
       tail.position.copy(front).add(new T.Vector3(0, 0, 0.02));
       tail.rotation.set(0.12, 0, Math.PI - side * 0.3);
       g.add(tail);
@@ -502,7 +546,7 @@
       if (f.leaves) {
         for (const t of [0.62, 0.72]) {
           const lp = curve.getPoint(t);
-          const leaf = new T.Mesh(leafGeo, petalMat());
+          const leaf = ink(new T.Mesh(leafGeo, petalMat()));
           leaf.position.copy(lp);
           leaf.quaternion.setFromUnitVectors(new T.Vector3(0, 1, 0), curve.getTangent(t));
           leaf.rotateY(t * 9 + a);

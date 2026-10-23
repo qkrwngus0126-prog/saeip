@@ -39,21 +39,16 @@
   function makeRenderer(opts) {
     const r = new THREE.WebGLRenderer({ antialias: true, alpha: true, ...opts });
     r.outputEncoding = THREE.sRGBEncoding;
-    r.toneMapping = THREE.ACESFilmicToneMapping;
-    r.toneMappingExposure = 0.92;
+    r.toneMapping = THREE.NoToneMapping;
     return r;
   }
   function lights(scene, renderer) {
     // 사진 스튜디오처럼 부드러운 반사광 + 위쪽 주광 + 뒤쪽 테두리 빛
-    if (THREE.RoomEnvironment) {
-      const pm = new THREE.PMREMGenerator(renderer);
-      scene.environment = pm.fromScene(new THREE.RoomEnvironment(), 0.04).texture;
-    }
-    scene.add(new THREE.HemisphereLight(0xfff6f2, 0x8f8a86, THREE.RoomEnvironment ? 0.2 : 0.8));
-    const key = new THREE.DirectionalLight(0xfff1e6, 1.1);
+    scene.add(new THREE.HemisphereLight(0xfffaf5, 0xd9cfd2, 0.5));
+    const key = new THREE.DirectionalLight(0xfff4ea, 1.05);
     key.position.set(2.5, 6, 4);
     scene.add(key);
-    const rim = new THREE.DirectionalLight(0xe8eeff, 0.6);
+    const rim = new THREE.DirectionalLight(0xf2f0ff, 0.25);
     rim.position.set(-3, 3, -5);
     scene.add(rim);
   }
