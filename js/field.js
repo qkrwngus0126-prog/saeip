@@ -14,7 +14,11 @@
   window.CloverField = function (field, opts) {
     const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
     const canvas = field.querySelector('canvas');
-    const ctx = canvas.getContext('2d');
+    // the meadow is drawn with WebGL 2 where it can be (every leaf in one go, by the graphics card),
+    // and with the 2D canvas otherwise; ?gl=0 keeps to the 2D canvas, to compare the two
+    const gl = /[?&]gl=0(&|$)/.test(location.search) ? null
+      : canvas.getContext('webgl2', { alpha: false, antialias: false, depth: false, stencil: false, premultipliedAlpha: true, preserveDrawingBuffer: false });
+    const ctx = gl ? null : canvas.getContext('2d');
 
     // white clover greens: front, slightly yellow, and a cooler one
     const GREENS = ['#4f7f45', '#5c8a48', '#44713f'];
@@ -258,6 +262,7 @@
     }
     // back to front, so nearer leaves overlap farther ones; then file every leaf in the grid cell of its home
     function index() {
+      if (webgl) webgl.forget();
       items.sort((a, b) => a.z - b.z);
       gcols = Math.ceil(WW / CELL) + 3; grows = Math.ceil(WH / CELL) + 3;
       grid = Array.from({ length: gcols * grows }, () => []);
@@ -762,7 +767,7 @@
     const idle = window.requestIdleCallback ? fn => requestIdleCallback(fn) : fn => setTimeout(() => fn({ timeRemaining: () => 10 }), 50);
     let prefetching = false;
     function prefetch() {
-      if (prefetching) return;
+      if (prefetching || webgl) return;
       prefetching = true;
       idle(deadline => {
         prefetching = false;
@@ -806,6 +811,242 @@
       }
       return out;
     }
+    /* ---------- drawing with WebGL: the whole view, every frame something changed ----------
+       The same pictures as the 2D canvas, kept in one big texture (an atlas), drawn at the same whole pixels
+       and in the same order: soil, the low leaves, the hidden clovers, the other leaves with what rests on them,
+       the light of the hour, then the blossoms on top. */
+    const webgl = gl && (() => {
+      const BG = [14 / 255, 20 / 255, 16 / 255];
+      let sprite, soil, wash, quad, inst, atlasTex, soilTex, soilFor = null;
+      let atlas = { w: 0, h: 0, x: 0, y: 0, row: 0, list: [], gen: 0 };
+      let data = new Float32Array(9 * 4096), lost = false;
+      const program = (vs, fs) => {
+        const make = (type, src) => { const sh = gl.createShader(type); gl.shaderSource(sh, src); gl.compileShader(sh); if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(sh)); return sh; };
+        const pr = gl.createProgram();
+        gl.attachShader(pr, make(gl.VERTEX_SHADER, vs)); gl.attachShader(pr, make(gl.FRAGMENT_SHADER, fs)); gl.linkProgram(pr);
+        if (!gl.getProgramParameter(pr, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(pr));
+        const u = {};
+        for (let i = 0, n = gl.getProgramParameter(pr, gl.ACTIVE_UNIFORMS); i < n; i++) { const name = gl.getActiveUniform(pr, i).name; u[name] = gl.getUniformLocation(pr, name); }
+        return { pr, u };
+      };
+      const FULL = `#version 300 es
+        void main() { vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2)); gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); }`;
+      function setup() {
+        // pictures: one rectangle each, in device pixels, cut from the atlas; the texture holds premultiplied colour like the canvas
+        sprite = program(`#version 300 es
+          layout(location = 0) in vec2 corner;
+          layout(location = 1) in vec4 dst;
+          layout(location = 2) in vec4 uv;
+          layout(location = 3) in float alpha;
+          uniform vec2 view;
+          out vec2 vUv; out float vA;
+          void main() {
+            vec2 p = dst.xy + corner * dst.zw;
+            vUv = mix(uv.xy, uv.zw, corner); vA = alpha;
+            gl_Position = vec4(p.x / view.x * 2.0 - 1.0, 1.0 - p.y / view.y * 2.0, 0.0, 1.0);
+          }`, `#version 300 es
+          precision mediump float;
+          uniform sampler2D tex;
+          in vec2 vUv; in float vA; out vec4 o;
+          void main() { o = texture(tex, vUv) * vA; }`);
+        // the soil: the same tile the canvas repeats, placed on the same whole pixels; dark earth outside the meadow
+        soil = program(FULL, `#version 300 es
+          precision highp float;
+          uniform sampler2D tex;
+          uniform vec2 view, cam, world;
+          uniform float tile, tileDev;
+          uniform vec3 bg;
+          out vec4 o;
+          void main() {
+            vec2 d = vec2(floor(gl_FragCoord.x), view.y - 1.0 - floor(gl_FragCoord.y)) + cam;
+            vec2 k = floor(d / tileDev);
+            if (d.x < 0.0 || d.y < 0.0 || k.x * tile >= world.x || k.y * tile >= world.y) { o = vec4(bg, 1.0); return; }
+            ivec2 size = textureSize(tex, 0);
+            ivec2 t = clamp(ivec2(d - floor(k * tileDev + 0.5)), ivec2(0), size - 1);
+            o = texelFetch(tex, t, 0);
+          }`);
+        // the light of the hour: one colour laid over everything with a blend that matches the canvas's
+        wash = program(FULL, `#version 300 es
+          precision mediump float;
+          uniform vec4 col; out vec4 o;
+          void main() { o = col; }`);
+        quad = gl.createVertexArray();
+        gl.bindVertexArray(quad);
+        const corners = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, corners);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0, 0, 1, 0, 0, 1, 1, 1]), gl.STATIC_DRAW);
+        gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+        inst = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, inst);
+        for (const [loc, n] of [[1, 4], [2, 4], [3, 1]]) { gl.enableVertexAttribArray(loc); gl.vertexAttribDivisor(loc, 1); }
+        gl.bindVertexArray(null);
+        atlasTex = gl.createTexture(); soilTex = gl.createTexture(); soilFor = null;
+        atlas = { w: 0, h: 0, x: 0, y: 0, row: 0, list: [], gen: atlas.gen + 1 };
+        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
+        gl.disable(gl.DEPTH_TEST);
+      }
+      const pointers = offset => {
+        const B = 9 * 4;
+        gl.bindBuffer(gl.ARRAY_BUFFER, inst);
+        gl.vertexAttribPointer(1, 4, gl.FLOAT, false, B, offset * B);
+        gl.vertexAttribPointer(2, 4, gl.FLOAT, false, B, offset * B + 16);
+        gl.vertexAttribPointer(3, 1, gl.FLOAT, false, B, offset * B + 32);
+      };
+      function texture(t, w, h) {
+        gl.bindTexture(gl.TEXTURE_2D, t);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      }
+      // the atlas: pictures packed in rows with a clear border, grown (and filled again) when it runs out of room
+      const PAD = 2;
+      function place(img) {
+        const w = img.width + PAD * 2, h = img.height + PAD * 2;
+        if (atlas.x + w > atlas.w) { atlas.x = 0; atlas.y += atlas.row; atlas.row = 0; }
+        if (!atlas.w || atlas.y + h > atlas.h) return false;
+        img.glAt = { x: atlas.x + PAD, y: atlas.y + PAD, gen: atlas.gen };
+        atlas.x += w; atlas.row = Math.max(atlas.row, h);
+        return true;
+      }
+      function grow() {
+        const max = gl.getParameter(gl.MAX_TEXTURE_SIZE);
+        const w = Math.min(max, 2048), h = Math.min(max, atlas.h ? atlas.h * 2 : 1024);
+        if (h === atlas.h) { atlas.list = []; atlas.h = 0; } // full at the largest size: start again with what is in use now
+        const keep = atlas.list;
+        atlas = { w, h, x: 0, y: 0, row: 0, list: [], gen: atlas.gen + 1 };
+        texture(atlasTex, w, h);
+        for (const img of keep) add(img);
+      }
+      function add(img) {
+        while (!place(img)) grow();
+        atlas.list.push(img);
+        gl.bindTexture(gl.TEXTURE_2D, atlasTex);
+        gl.texSubImage2D(gl.TEXTURE_2D, 0, img.glAt.x, img.glAt.y, gl.RGBA, gl.UNSIGNED_BYTE, img);
+      }
+      let seenGen = -1, n = 0;
+      function at(img) {
+        if (!img.glAt || img.glAt.gen !== atlas.gen) add(img);
+        return img.glAt;
+      }
+      function put(img, x, y, w, h, a) {
+        const g = at(img);
+        if (n * 9 + 9 > data.length) { const d = new Float32Array(data.length * 2); d.set(data); data = d; }
+        const o = n * 9;
+        data[o] = x; data[o + 1] = y; data[o + 2] = w; data[o + 3] = h;
+        data[o + 4] = g.x / atlas.w; data[o + 5] = g.y / atlas.h; data[o + 6] = (g.x + img.width) / atlas.w; data[o + 7] = (g.y + img.height) / atlas.h;
+        data[o + 8] = a;
+        n++;
+      }
+      // the leaves near the view, back to front; kept while the view stays over the same grid cells
+      let near_ = [], nearKey = '';
+      function visible() {
+        const m = 140, key = [cellX(cam.x - m), cellY(cam.y - m), cellX(cam.x + VW + m), cellY(cam.y + VH + m), items.length, grid.length].join();
+        if (key !== nearKey) { nearKey = key; near_ = near(cam.x - m, cam.y - m, cam.x + VW + m, cam.y + VH + m).sort((a, b) => a.order - b.order); }
+        return near_;
+      }
+      const BLEND = { multiply: [gl.ZERO, gl.SRC_COLOR], screen: [gl.ONE, gl.ONE_MINUS_SRC_COLOR], 'source-over': [gl.ONE, gl.ONE_MINUS_SRC_ALPHA] };
+      const rgba = c => { const v = c.match(/[\d.]+/g).map(Number); return [v[0] / 255, v[1] / 255, v[2] / 255, v.length > 3 ? v[3] : 1]; };
+      function render() {
+        if (lost) return;
+        // the pictures were made again (a new sharpness, or memory ran short): start the atlas afresh, every pixel clear
+        if (seenGen !== sizedGen) {
+          seenGen = sizedGen;
+          if (atlas.w) texture(atlasTex, atlas.w, atlas.h);
+          atlas = { w: atlas.w, h: atlas.h, x: 0, y: 0, row: 0, list: [], gen: atlas.gen + 1 };
+        }
+        const W = canvas.width, H = canvas.height, ox = cam.x, oy = cam.y;
+        const cx = Math.round(ox * dpr), cy = Math.round(oy * dpr);
+        gl.viewport(0, 0, W, H);
+        // the soil
+        if (soilFor !== soilTile) {
+          soilFor = soilTile;
+          gl.bindTexture(gl.TEXTURE_2D, soilTex);
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, soilTile);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+        }
+        gl.disable(gl.BLEND);
+        gl.useProgram(soil.pr);
+        gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, soilTex);
+        gl.uniform1i(soil.u.tex, 0);
+        gl.uniform2f(soil.u.view, W, H); gl.uniform2f(soil.u.cam, cx, cy); gl.uniform2f(soil.u.world, WW, WH);
+        gl.uniform1f(soil.u.tile, TILE); gl.uniform1f(soil.u.tileDev, TILE * dpr); gl.uniform3fv(soil.u.bg, BG);
+        gl.bindVertexArray(null);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+        // the pictures, in the order the canvas paints them
+        n = 0;
+        const x0 = ox, y0 = oy, x1 = ox + VW, y1 = oy + VH;
+        const seen = (x, y, r) => !(x + r < x0 || x - r > x1 || y + r < y0 || y - r > y1);
+        const list = visible();
+        const leaf = l => {
+          const x = l.hx + l.ox, y = l.hy + l.oy;
+          if (!seen(x, y, reach(l))) return;
+          const img = sized(l), lx = Math.round((x - ox) * dpr - l.hw), ly = Math.round((y - oy) * dpr - l.hw);
+          put(img, lx + img.ox, ly + img.oy, img.width, img.height, 1);
+          if (decor && l.tier === 2 && !l.grass && l.deco < decor.rate) {
+            const d2 = decor.sprites[l.dv], d = SPRITE * l.s * l.dd * 0.5, k = d2.width / dpr / 2;
+            put(d2, lx + Math.round((Math.cos(l.da + l.rot) * d - k) * dpr + l.hw), ly + Math.round((Math.sin(l.da + l.rot) * d - k) * dpr + l.hw), d2.width, d2.height, 1);
+          }
+        };
+        let i = 0;
+        for (; i < list.length && list[i].z < HIDDEN_Z; i++) leaf(list[i]);
+        for (const h of hidden) {
+          if (!seen(h.x, h.y, SPRITE * h.s * 0.7)) continue;
+          const pop = h.found ? 1 + Math.sin(Math.min(h.t, 1) * Math.PI) * 0.18 : 1, size = SPRITE * h.s * pop * dpr;
+          const px = (h.x - ox) * dpr - size / 2, py = (h.y - oy) * dpr - size / 2;
+          put(threeSprites[h.rk], px, py, size, size, 1);
+          if (h.found && h.lit) put(litSprites[h.kind][h.rk], px, py, size, size, 0.85);
+        }
+        for (; i < list.length; i++) leaf(list[i]);
+        const leaves = n;
+        // a written clover's blossom, above the light
+        for (const h of hidden) {
+          if (h.kind !== 'happy' || (h.found && h.lit)) continue;
+          if (!seen(h.x, h.y, 28)) continue;
+          if (!blossoms.plain) blossoms = { plain: makeBlossom(false), mine: makeBlossom(true) };
+          const img = h.mine ? blossoms.mine : blossoms.plain, half = img.width / dpr / 2;
+          put(img, Math.round((h.x - ox - half) * dpr), Math.round((h.y - oy - half - 2) * dpr), img.width, img.height, 1);
+        }
+
+        gl.useProgram(sprite.pr);
+        gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, atlasTex);
+        gl.uniform1i(sprite.u.tex, 0); gl.uniform2f(sprite.u.view, W, H);
+        gl.bindVertexArray(quad);
+        gl.bindBuffer(gl.ARRAY_BUFFER, inst);
+        gl.bufferData(gl.ARRAY_BUFFER, data.subarray(0, n * 9), gl.STREAM_DRAW);
+        gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+        pointers(0);
+        if (leaves) gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, leaves);
+        // the light of the hour
+        if (light.length) {
+          gl.bindVertexArray(null);
+          gl.useProgram(wash.pr);
+          for (const [op, color] of light) {
+            const [r, g, b, a] = rgba(color);
+            const f = BLEND[op] || BLEND['source-over'];
+            gl.blendFunc(f[0], f[1]);
+            // multiply: dst * (1 - a + a*c) · screen: a*c + dst * (1 - a*c) · over: a*c + dst * (1 - a)
+            if (op === 'multiply') gl.uniform4f(wash.u.col, 1 - a + a * r, 1 - a + a * g, 1 - a + a * b, 1);
+            else gl.uniform4f(wash.u.col, a * r, a * g, a * b, a);
+            gl.drawArrays(gl.TRIANGLES, 0, 3);
+          }
+          gl.useProgram(sprite.pr);
+          gl.bindVertexArray(quad);
+          gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+        }
+        if (n > leaves) { pointers(leaves); gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, n - leaves); }
+        gl.bindVertexArray(null);
+      }
+      setup();
+      // if the graphics card is taken away (a driver reset, too many tabs), wait for it and set everything up again
+      canvas.addEventListener('webglcontextlost', e => { e.preventDefault(); lost = true; });
+      canvas.addEventListener('webglcontextrestored', () => { lost = false; setup(); full = true; wake(); });
+      return { render, forget() { nearKey = ''; } };
+    })();
+
     let drew = false; // whether the last frame painted anything
     function draw() {
       if (meter) { const t = performance.now(); paintFrame(); meter.ms += performance.now() - t; return; }
@@ -814,6 +1055,12 @@
     function paintFrame() {
       drew = false;
       if (!VW || !soilTile) return;
+      if (webgl) {
+        if (!full && !dirty.size) return;
+        full = false; dirty.clear(); drew = true;
+        webgl.render();
+        return;
+      }
       if (full) {
         drew = true;
         full = false;
@@ -1057,7 +1304,7 @@
         meter.frames++;
         if (now - meter.t0 >= 1000) {
           const fps = meter.frames * 1000 / (now - meter.t0);
-          meter.el.textContent = `${fps.toFixed(0)} fps · paint ${(meter.ms / meter.frames).toFixed(1)} ms · ${dpr}x · ${VW | 0}×${VH | 0}`;
+          meter.el.textContent = `${fps.toFixed(0)} fps · paint ${(meter.ms / meter.frames).toFixed(1)} ms · ${dpr}x · ${VW | 0}×${VH | 0} · ${webgl ? 'WebGL' : '2D'}`;
           meter.frames = 0; meter.ms = 0; meter.t0 = now;
         }
         requestAnimationFrame(count);
