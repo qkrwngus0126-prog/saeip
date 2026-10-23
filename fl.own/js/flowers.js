@@ -4,6 +4,7 @@
    window.FLOWN.buildBouquet(state) : 꽃다발 한 다발(THREE.Group)을 만들어 돌려줘요 */
 (function () {
   const T = THREE;
+  T.ColorManagement.legacyMode = false; // 색 코드(#rrggbb)를 화면에서 보는 색 그대로 쓰게
   const TAU = Math.PI * 2;
   const GOLD = 2.399963; // 황금각(라디안). 해바라기 씨처럼 고르게 흩어 놓을 때 써요
 
@@ -23,20 +24,22 @@
 
   const mats = {};
   const cached = (key, make) => mats[key] || (mats[key] = make());
-  const petalMat = () => cached('petal', () => new T.MeshStandardMaterial({ vertexColors: true, side: T.DoubleSide, roughness: 0.6 }));
-  const plain = (hex, rough = 0.7) => cached(hex + '|' + rough, () => new T.MeshStandardMaterial({ color: hex, roughness: rough, side: T.DoubleSide }));
-  const STEM = '#4c7536';
+  // 꽃잎은 벨벳처럼 결이 빛을 받는 재질(sheen)
+  const petalMat = () => cached('petal', () => new T.MeshPhysicalMaterial({ vertexColors: true, side: T.DoubleSide, roughness: 0.55, sheen: 1, sheenRoughness: 0.45, sheenColor: new T.Color('#ffffff'), envMapIntensity: 0.5 }));
+  const plain = (hex, rough = 0.7) => cached(hex + '|' + rough, () => new T.MeshStandardMaterial({ color: hex, roughness: rough, side: T.DoubleSide, envMapIntensity: 0.5 }));
+  const STEM = '#3f6430';
 
   /* 꽃잎 한 장. 밑동이 원점이고 +Y로 자라요. 가장자리는 -Z(꽃 안쪽)로 오므라져요.
      cup  : 옆으로 오므린 정도
      bend : 끝이 바깥(+Z)으로 젖혀지는 정도 (음수면 안으로 말려요)
      peak : 가장 넓은 곳의 높이 (0~1)
      tip  : 끝 모양 (작을수록 둥글고, 1보다 크면 뾰족)
-     wave : 가장자리 물결 */
+     wave : 가장자리 물결
+     roll : 꽃잎 끝 양옆이 바깥으로 말리는 정도 (장미) */
   function petal(o) {
     const len = o.len ?? 1, wid = o.wid ?? 0.5, cup = o.cup ?? 0.3, bend = o.bend ?? 0.1;
-    const peak = o.peak ?? 0.6, tip = o.tip ?? 0.6, wave = o.wave ?? 0;
-    const nu = o.nu ?? 6, nv = o.nv ?? 9;
+    const peak = o.peak ?? 0.6, tip = o.tip ?? 0.6, wave = o.wave ?? 0, roll = o.roll ?? 0;
+    const nu = o.nu ?? 8, nv = o.nv ?? 12;
     const c0 = col(o.base ?? o.color), c1 = col(o.color), c2 = col(o.edge ?? o.color);
     const sp = Math.log(0.5) / Math.log(peak); // v = peak 에서 가장 넓어지게
     const pos = [], clr = [], idx = [];
@@ -49,6 +52,7 @@
         const half = wid * 0.5 * w;
         let z = -cup * u * u * half * 1.6 + bend * len * v * v;
         if (wave) z += wave * Math.sin(u * 6 + v * 4) * half * v;
+        if (roll) z += roll * Math.pow(Math.abs(u), 3) * Math.pow(v, 2) * len;
         pos.push(u * half, v * len, z);
         const k = 1 - 0.1 * Math.abs(u);
         clr.push(cv.r * k, cv.g * k, cv.b * k);
@@ -134,14 +138,15 @@
 
   function rose(c) {
     const g = new T.Group();
-    const n = 26;
+    const n = 32;
     for (let k = 0; k < n; k++) {
       const t = k / (n - 1);
       const geo = petal({
-        len: 0.2 + 0.2 * t, wid: 0.22 + 0.3 * t, cup: 0.95 - 0.45 * t, bend: -0.14 + 0.45 * t * t,
-        peak: 0.62, tip: 0.35, base: shade(c, -0.3), color: c, edge: shade(c, 0.1 * t), wave: 0.05 * t,
+        len: 0.19 + 0.2 * t, wid: 0.2 + 0.32 * t, cup: 1.0 - 0.5 * t, bend: -0.16 + 0.3 * t * t,
+        roll: 0.05 + 0.3 * t * t, peak: 0.66, tip: 0.3,
+        base: mix(shade(c, -0.35), '#d8c27a', 0.15), color: c, edge: shade(c, t > 0.5 ? 0.12 : -0.12), wave: 0.04 * t,
       });
-      place(g, geo, k * GOLD, 0.06 + 1.05 * Math.pow(t, 1.6), 0.012 + 0.06 * t, -0.05 * t);
+      place(g, geo, k * GOLD, 0.04 + 0.95 * Math.pow(t, 1.7), 0.01 + 0.06 * t, -0.05 * t);
     }
     sepals(g, 5, 0.2);
     return g;
@@ -152,7 +157,7 @@
     for (let ring = 0; ring < 2; ring++) {
       const geo = petal({
         len: 0.6 - ring * 0.03, wid: 0.42, cup: 0.8, bend: -0.06 + ring * 0.04, peak: 0.62, tip: 0.5,
-        base: shade(c, 0.35), color: c, edge: shade(c, -0.08), nv: 10,
+        base: mix(c, '#e9d36a', 0.35), color: c, edge: shade(c, 0.15), nv: 12, roll: -0.03,
       });
       for (let k = 0; k < 3; k++) place(g, geo, (k / 3) * TAU + ring * (TAU / 6), 0.12 + ring * 0.08, 0.03);
     }
@@ -329,27 +334,57 @@
 
   /* ---------- 포장지와 리본 ---------- */
 
-  // 포장지 한 장. a0~a1 둘레를 감싸고, 위쪽 가장자리가 가운데에서 솟아요
-  function sheet(a0, a1, rBase, peakY, hex, ruffle) {
-    const nu = 26, nv = 16, pos = [], idx = [], uv = [];
-    const yTie = -0.25, yBot = -0.95;
+  // 종이 결: 잘게 구겨진 섬유 무늬를 캔버스로 한 번 그려 두고 모든 포장지가 같이 써요
+  let paperTex = null;
+  function paperTexture() {
+    if (paperTex) return paperTex;
+    const c = document.createElement('canvas');
+    c.width = c.height = 256;
+    const g = c.getContext('2d');
+    g.fillStyle = '#eeeeee';
+    g.fillRect(0, 0, 256, 256);
+    const rand = rng(42);
+    for (let i = 0; i < 1400; i++) { // 섬유
+      const x = rand() * 256, y = rand() * 256, a = rand() * Math.PI, l = 4 + rand() * 14;
+      g.strokeStyle = rand() < 0.5 ? 'rgba(255,255,255,0.35)' : 'rgba(0,0,0,0.07)';
+      g.lineWidth = 0.6 + rand();
+      g.beginPath();
+      g.moveTo(x, y);
+      g.lineTo(x + Math.cos(a) * l, y + Math.sin(a) * l);
+      g.stroke();
+    }
+    for (let i = 0; i < 9; i++) { // 굵게 접힌 자국
+      const y = rand() * 256;
+      const grad = g.createLinearGradient(0, y - 6, 0, y + 6);
+      grad.addColorStop(0, 'rgba(0,0,0,0)');
+      grad.addColorStop(0.5, rand() < 0.5 ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.25)');
+      grad.addColorStop(1, 'rgba(0,0,0,0)');
+      g.fillStyle = grad;
+      g.fillRect(0, y - 6, 256, 12);
+    }
+    paperTex = new T.CanvasTexture(c);
+    paperTex.wrapS = paperTex.wrapT = T.RepeatWrapping;
+    paperTex.repeat.set(2, 2);
+    return paperTex;
+  }
+  const paperMat = (hex, sheer) => cached('paper' + hex + sheer, () => new T.MeshStandardMaterial({
+    color: hex, map: paperTexture(), bumpMap: paperTexture(), bumpScale: 0.004,
+    roughness: sheer ? 0.7 : 0.88, side: T.DoubleSide,
+    transparent: !!sheer, opacity: sheer ? 0.92 : 1,
+  }));
+
+  /* 포장지 한 장: 가운데가 접혀 각이 선 연잎 모양. 밑동이 원점, 바깥(+Z)을 보고 +Y로 서요.
+     w: 가장 넓은 곳의 반폭, h: 높이, fold: 가운데 접힌 깊이 */
+  function paperSheet(w, h, fold, material, wobble) {
+    const nu = 12, nv = 16, pos = [], uv = [], idx = [];
     for (let j = 0; j <= nv; j++) {
-      const s = j / nv;
+      const v = j / nv;
+      const hw = w * (v < 0.72 ? 0.16 + 0.84 * Math.sin((v / 0.72) * Math.PI / 2) : 1 - 0.8 * Math.pow((v - 0.72) / 0.28, 1.6));
       for (let i = 0; i <= nu; i++) {
-        const u = i / nu, a = a0 + (a1 - a0) * u;
-        const top = peakY + 0.38 * Math.sin(Math.PI * u);
-        let y, r;
-        if (s < 0.2) { // 리본 아래 손잡이
-          const k = s / 0.2;
-          y = yBot + (yTie - yBot) * k;
-          r = rBase + 0.04 * (1 - k);
-        } else {
-          const k = (s - 0.2) / 0.8;
-          y = yTie + (top - yTie) * k;
-          r = rBase + 0.95 * Math.pow(k, 1.25) + ruffle * Math.sin(a * 11 + k * 5) * k;
-        }
-        pos.push(Math.cos(a) * r, y, Math.sin(a) * r);
-        uv.push(u, s);
+        const u = (i / nu) * 2 - 1;
+        let z = -fold * Math.abs(u) * hw + 0.22 * v * v * h + wobble * Math.sin(u * 7 + v * 6) * v * hw;
+        pos.push(u * hw, v * h, z);
+        uv.push((u + 1) / 2, v);
       }
     }
     for (let j = 0; j < nv; j++) for (let i = 0; i < nu; i++) {
@@ -361,43 +396,57 @@
     g.setAttribute('uv', new T.Float32BufferAttribute(uv, 2));
     g.setIndex(idx);
     g.computeVertexNormals();
-    return new T.Mesh(g, plain(hex, 0.92));
+    return new T.Mesh(g, material);
   }
 
+  const TIE_Y = -0.3;
   function wrapping(hex, ribbon) {
     const g = new T.Group();
-    const inner = mix(hex, '#ffffff', hex === '#2a2a2e' ? 0.08 : 0.55).getStyle();
-    // 안쪽 얇은 종이(속지) 다섯 장, 바깥 종이 네 장
-    for (let k = 0; k < 5; k++) {
-      const a = (k / 5) * TAU + 0.4;
-      g.add(sheet(a, a + TAU * 0.32, 0.25, 0.88 + (k % 2) * 0.12, inner, 0.035));
+    const dark = new T.Color(hex).getHSL({}).l < 0.3;
+    const tissue = paperMat(mix(hex, '#ffffff', dark ? 0.12 : 0.7).getHexString().replace(/^/, '#'), true);
+    const outer = paperMat(hex, false);
+    // 안쪽 속지 7장 → 꽃 사이로 살짝 비치고, 바깥 종이 5장 → 꽃다발 모양을 잡아요
+    const layers = [
+      { n: 8, w: 0.5, h: 1.95, tilt: 0.3, r: 0.16, mat: tissue, off: 0.2, fold: 0.35 },
+      { n: 5, w: 0.66, h: 1.68, tilt: 0.5, r: 0.2, mat: outer, off: 0, fold: 0.55 },
+    ];
+    for (const L of layers) {
+      for (let k = 0; k < L.n; k++) {
+        const pivot = new T.Group();
+        pivot.rotation.y = (k / L.n) * TAU + L.off;
+        pivot.position.y = TIE_Y - 0.08;
+        const m = paperSheet(L.w * (0.92 + 0.16 * ((k * 7) % 3) / 2), L.h * (0.94 + 0.1 * ((k * 5) % 3) / 2), L.fold, L.mat, 0.03);
+        m.position.z = L.r;
+        m.rotation.x = L.tilt;
+        pivot.add(m);
+        g.add(pivot);
+      }
     }
-    for (let k = 0; k < 4; k++) {
-      const a = (k / 4) * TAU - 0.2;
-      g.add(sheet(a, a + TAU * 0.38, 0.29, 0.58 + (k % 2) * 0.16, hex, 0.02));
-    }
+    // 리본 아래 손잡이: 줄기를 감싼 종이
+    const sleeve = new T.Mesh(new T.CylinderGeometry(0.2, 0.17, 0.75, 28, 1, true), outer);
+    sleeve.position.y = TIE_Y - 0.36;
+    g.add(sleeve);
+
     // 리본: 묶은 띠, 나비 고리 두 개, 늘어진 꼬리 두 개
-    const rm = plain(ribbon, 0.45);
-    const band = new T.Mesh(new T.TorusGeometry(0.3, 0.035, 8, 40), rm);
-    band.rotation.x = Math.PI / 2;
-    band.scale.set(1, 1, 1.7);
-    band.position.y = -0.27;
+    const rm = cached('ribbon' + ribbon, () => new T.MeshPhysicalMaterial({ color: ribbon, roughness: 0.35, sheen: 1, sheenRoughness: 0.3, sheenColor: new T.Color('#ffffff'), side: T.DoubleSide }));
+    const band = new T.Mesh(new T.CylinderGeometry(0.235, 0.235, 0.09, 32, 1, true), rm);
+    band.position.y = TIE_Y;
     g.add(band);
-    const front = new T.Vector3(0, -0.27, 0.33);
+    const front = new T.Vector3(0, TIE_Y, 0.25);
     for (const side of [-1, 1]) {
-      const loop = new T.Mesh(new T.TorusGeometry(0.13, 0.03, 8, 28), rm);
-      loop.scale.set(1.25, 0.65, 0.5);
-      loop.position.copy(front).add(new T.Vector3(side * 0.15, 0.02, 0.03));
-      loop.rotation.z = side * 0.35;
+      const loop = new T.Mesh(new T.TorusGeometry(0.12, 0.028, 10, 32), rm);
+      loop.scale.set(1.3, 0.62, 0.55);
+      loop.position.copy(front).add(new T.Vector3(side * 0.14, 0.03, 0.03));
+      loop.rotation.z = side * 0.32;
       g.add(loop);
-      const tail = new T.Mesh(petal({ len: 0.55, wid: 0.09, cup: 0.15, bend: 0.12, peak: 0.85, tip: 0.2, color: ribbon, nu: 3, nv: 6 }), petalMat());
-      tail.position.copy(front);
-      tail.rotation.set(0.15, 0, Math.PI - side * 0.35);
+      const tail = new T.Mesh(petal({ len: 0.62, wid: 0.1, cup: 0.25, bend: 0.1, peak: 0.9, tip: 0.15, color: ribbon, nu: 4, nv: 10, wave: 0.15 }), rm);
+      tail.position.copy(front).add(new T.Vector3(0, 0, 0.02));
+      tail.rotation.set(0.12, 0, Math.PI - side * 0.3);
       g.add(tail);
     }
-    const knot = new T.Mesh(new T.SphereGeometry(0.05, 12, 8), rm);
-    knot.position.copy(front).add(new T.Vector3(0, 0, 0.04));
-    knot.scale.set(1, 0.8, 0.7);
+    const knot = new T.Mesh(new T.SphereGeometry(0.05, 14, 10), rm);
+    knot.position.copy(front).add(new T.Vector3(0, 0, 0.05));
+    knot.scale.set(1, 0.85, 0.7);
     g.add(knot);
     return g;
   }
@@ -417,8 +466,8 @@
       return { i, key: rand() + (f.green ? 0.9 : 0) + (f.filler ? 0.35 : 0) - (f.focal ? 0.15 : 0) };
     }).sort((a, b) => a.key - b.key);
 
-    const R = Math.min(1.35, 0.3 + 0.2 * Math.sqrt(n));
-    const tie = new T.Vector3(0, -0.27, 0);
+    const R = Math.min(1.05, 0.2 + 0.17 * Math.sqrt(n));
+    const tie = new T.Vector3(0, TIE_Y, 0);
     const stemMat = plain(STEM, 0.8);
     const leafGeo = petal({ len: 0.32, wid: 0.15, cup: 0.4, bend: 0.12, peak: 0.45, tip: 1.1, color: '#5d8a3f', base: '#3f6a2c', nu: 4, nv: 7 });
 
@@ -427,13 +476,13 @@
       const k = n === 1 ? 0 : Math.sqrt((rank + 0.5) / n);
       const a = rank * GOLD + rand() * 0.5;
       const r = R * k;
-      const y = 1.95 - 0.7 * k * k + (f.rise || 0) + (rand() - 0.5) * 0.12;
+      const y = 1.28 - 0.42 * k * k + (f.rise || 0) + (rand() - 0.5) * 0.12;
       const headPos = new T.Vector3(Math.cos(a) * r, y, Math.sin(a) * r);
       const out = new T.Vector3(Math.cos(a), 0, Math.sin(a));
 
       // 꽃대: 아래 끝 → 리본 → 살짝 바깥으로 휘어 → 꽃 머리
       const curve = new T.CatmullRomCurve3([
-        new T.Vector3(-out.x * 0.16 + (rand() - 0.5) * 0.05, -1.75, -out.z * 0.16 + (rand() - 0.5) * 0.05),
+        new T.Vector3(-out.x * 0.1 + (rand() - 0.5) * 0.04, -1.45, -out.z * 0.1 + (rand() - 0.5) * 0.04),
         tie.clone().addScaledVector(out, 0.03),
         new T.Vector3().lerpVectors(tie, headPos, 0.55).addScaledVector(out, 0.12 * k),
         headPos,
@@ -468,5 +517,5 @@
     return root;
   }
 
-  window.FLOWN = { FLOWERS, WRAPS, RIBBONS, HEAD, buildBouquet };
+  window.FLOWN = { FLOWERS, WRAPS, RIBBONS, HEAD, buildBouquet, flowerHead: head };
 })();
