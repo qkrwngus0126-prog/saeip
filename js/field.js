@@ -319,7 +319,8 @@
     // how sharp the meadow is drawn. 1.5x is sharp enough for leaves and paints far fewer pixels each frame than 2x or 3x;
     // a device that still can't keep up while digging steps down a notch once the hand rests, and remembers it
     const SHARP = [1.5, 1.25, 1];
-    const SHARP_KEY = 'happy:field-sharp';
+    // WebGL and the 2D canvas keep separate notes: a device that was slow with one may well keep up with the other
+    const SHARP_KEY = gl ? 'happy:field-sharp-gl' : 'happy:field-sharp';
     let sharp = 0;
     try { sharp = Math.min(SHARP.length - 1, Math.max(0, parseInt(localStorage.getItem(SHARP_KEY), 10) || 0)); } catch (_) { /* 처음 값으로 */ }
     // for checking on a real device: ?sharp=1 (or 1.25, 1.5) tries one sharpness for this visit only, ?fps shows how smoothly it draws
